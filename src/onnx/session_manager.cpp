@@ -3,12 +3,30 @@
 //
 
 #include "../onnxruntime_server.hpp"
+#include <dlfcn.h> // For dlopen and dlerror
+#include <iostream>
 
 using namespace onnxruntime_server::onnx;
 
 session_manager::session_manager(const model_bin_getter_t &model_bin_getter, long num_threads)
 	: model_bin_getter(model_bin_getter), thread_pool(num_threads) {
 	assert(model_bin_getter != nullptr);
+
+	// Explicitly load custom operator library at startup
+	const char* custom_ops_path = std::getenv("ORT_CUSTOM_OPS_LIB_PATH");
+	if (custom_ops_path != nullptr) {
+		// Load the library globally and immediately resolve symbols
+		void* handle = dlopen(custom_ops_path, RTLD_NOW | RTLD_GLOBAL);
+		if (!handle) {
+			std::cerr << "Failed to load custom operator library ("
+			          << custom_ops_path << "): " << dlerror() << std::endl;
+			throw std::runtime_error(dlerror());
+		} else {
+			std::cout << "Successfully loaded custom operator library: " << custom_ops_path << std::endl;
+		}
+	} else {
+		std::cerr << "Environment variable ORT_CUSTOM_OPS_LIB_PATH is not set!" << std::endl;
+	}
 }
 
 session_manager::~session_manager() {
@@ -37,10 +55,12 @@ session_ptr session_manager::create_session(
 	session_ptr session = nullptr;
 	std::lock_guard<std::recursive_mutex> lock(mutex);
 
+	// Check if session already exists
 	const auto current_session = get_session(key);
 	if (current_session != nullptr)
 		throw conflict_error("session already exists");
 
+	// Create session based on provided data or file path
 	if (model_data != nullptr && model_data_length > 0) {
 		session = std::make_shared<onnx::session>(key, model_data, model_data_length, option);
 	} else if (option.contains("path") && option["path"].is_string()) {
